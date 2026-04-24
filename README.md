@@ -181,6 +181,7 @@ The bootstrap template tells env0 how to deploy the `bootstrap/` folder.
 |---|---|---|
 | `aws_region` | `eu-central-1` | Clear Text |
 | `project_name` | `tf-remote-backend` | Clear Text |
+| `state_bucket_name` | `tf-remote-backend-state-<YOUR_ACCOUNT_ID>-eu-central-1` | Clear Text |
 
 7. Name the template `terraform-s3-remote-backend-bootstrap`
 8. Complete the wizard and save
