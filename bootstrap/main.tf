@@ -21,12 +21,7 @@ locals {
 
 resource "aws_s3_bucket" "terraform_state" {
   bucket = local.bucket_name
-
-  # Safety net: Terraform will refuse to destroy this bucket even on `terraform destroy`.
-  # Remove this block manually if you ever want to decommission the backend.
-  #lifecycle {
-    #prevent_destroy = true
-  #}
+  force_destroy = true
 }
 
 # Enable versioning so every state push creates a recoverable version.
