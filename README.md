@@ -6,7 +6,7 @@
 
 # Terraform S3 Remote Backend with DynamoDB State Locking (env0)
 
-A complete, working Terraform project that provisions an **AWS S3 remote backend** with **DynamoDB state locking**, deployed through **env0**. All resources live in `eu-central-1` (Frankfurt) and are configured to stay within or extremely close to the **AWS Free Tier**.
+A complete, working Terraform project that provisions an **AWS S3 remote backend** with **DynamoDB state locking**, deployed entirely through **env0**. All resources live in `eu-central-1` (Frankfurt) and are configured to stay within or extremely close to the **AWS Free Tier**.
 
 ---
 
@@ -16,69 +16,74 @@ A complete, working Terraform project that provisions an **AWS S3 remote backend
 2. [Repository Structure](#repository-structure)
 3. [Cost Breakdown](#cost-breakdown)
 4. [Prerequisites](#prerequisites)
-5. [Step 1 — Bootstrap the Remote Backend (Local, Run Once)](#step-1--bootstrap-the-remote-backend-local-run-once)
-6. [Step 2 — Configure the Infra Backend](#step-2--configure-the-infra-backend)
-7. [Step 3 — Connect to env0](#step-3--connect-to-env0)
-8. [Step 4 — Deploy via env0](#step-4--deploy-via-env0)
-9. [Verifying the Remote Backend](#verifying-the-remote-backend)
-10. [Viewing the State Lock](#viewing-the-state-lock)
-11. [IAM Permissions](#iam-permissions)
-12. [How State Locking Works](#how-state-locking-works)
-13. [Why Two S3 Buckets?](#why-two-s3-buckets)
-14. [Destroying Resources](#destroying-resources)
-15. [Troubleshooting](#troubleshooting)
-16. [Variable Reference](#variable-reference)
+5. [End-to-End Deployment via env0](#end-to-end-deployment-via-env0)
+   - [Phase 1 — AWS Credentials](#phase-1--aws-credentials)
+   - [Phase 2 — Create the Bootstrap Template](#phase-2--create-the-bootstrap-template)
+   - [Phase 3 — Deploy Bootstrap via env0](#phase-3--deploy-bootstrap-via-env0)
+   - [Phase 4 — Configure the Infra Backend](#phase-4--configure-the-infra-backend)
+   - [Phase 5 — Create the Infra Template](#phase-5--create-the-infra-template)
+   - [Phase 6 — Deploy Infra via env0](#phase-6--deploy-infra-via-env0)
+6. [Verifying the Remote Backend](#verifying-the-remote-backend)
+7. [Viewing the State Lock](#viewing-the-state-lock)
+8. [IAM Permissions](#iam-permissions)
+9. [How State Locking Works](#how-state-locking-works)
+10. [Why Two S3 Buckets?](#why-two-s3-buckets)
+11. [Destroying Resources](#destroying-resources)
+12. [Troubleshooting](#troubleshooting)
+13. [Variable Reference](#variable-reference)
 
 ---
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        env0 Platform                            │
-│                                                                 │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │              Infra Environment (dev)                     │  │
-│   │         Auto-deploys on push to main branch              │  │
-│   └─────────────────────────┬────────────────────────────────┘  │
-└─────────────────────────────┼───────────────────────────────────┘
-                              │ terraform init + plan + apply
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     AWS  eu-central-1                           │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  S3 State Bucket (created by bootstrap — run once)       │   │
-│  │  tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1       │   │
-│  │                                                          │   │
-│  │   infra/terraform.tfstate  ◄── written by env0 deploy    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  DynamoDB Lock Table (created by bootstrap — run once)   │   │
-│  │  tf-remote-backend-locks                                 │   │
-│  │                                                          │   │
-│  │   LockID written at start of plan/apply                  │   │
-│  │   LockID deleted on completion                           │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Demo App Bucket (created by env0 infra deploy)          │   │
-│  │  tf-remote-backend-demo-dev-<ACCOUNT_ID>                 │   │
-│  │                                                          │   │
-│  │   This is the "proof" workload resource                  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           env0 Platform                              │
+│                                                                      │
+│  ┌─────────────────────────┐    ┌─────────────────────────────────┐  │
+│  │  Bootstrap Environment  │    │      Infra Environment (dev)    │  │
+│  │  Run ONCE to create     │    │  Auto-deploys on push to main   │  │
+│  │  state bucket + table   │    │  State stored in state bucket   │  │
+│  └────────────┬────────────┘    └──────────────┬──────────────────┘  │
+└───────────────┼─────────────────────────────────┼────────────────────┘
+                │ terraform apply                  │ terraform init + apply
+                ▼                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                        AWS  eu-central-1                             │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  S3 State Bucket          ◄── created by bootstrap             │  │
+│  │  tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1             │  │
+│  │                                                                │  │
+│  │   env:/<workspace>/infra/terraform.tfstate  ◄── written by     │  │
+│  │                                                  env0 deploy   │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  DynamoDB Lock Table      ◄── created by bootstrap             │  │
+│  │  tf-remote-backend-locks                                       │  │
+│  │                                                                │  │
+│  │   LockID written at start of plan/apply                        │  │
+│  │   LockID deleted on completion                                 │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  Demo App Bucket          ◄── created by infra deploy          │  │
+│  │  tf-remote-backend-demo-dev-<ACCOUNT_ID>                       │  │
+│  │                                                                │  │
+│  │   This is the "proof" workload resource                        │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Two-Layer Design
 
 | Layer | Where it runs | Purpose |
 |---|---|---|
-| **bootstrap** | Locally, once | Creates the S3 state bucket and DynamoDB lock table |
-| **infra** | env0, every deploy | Creates real workload resources; state stored in the bootstrap bucket |
+| **bootstrap** | env0, run once | Creates the S3 state bucket and DynamoDB lock table |
+| **infra** | env0, every deploy | Creates workload resources; state stored in the bootstrap bucket |
 
-The bootstrap layer must exist before the infra layer can initialise its remote backend. Bootstrap uses Terraform's default **local state** — there is no chicken-and-egg problem.
+The bootstrap layer must be deployed first. Its state is managed by env0 internally. Once bootstrap succeeds, the infra layer can initialise its remote backend.
 
 ---
 
@@ -87,32 +92,27 @@ The bootstrap layer must exist before the infra layer can initialise its remote 
 ```
 terraform-s3-remote-backend/
 │
-├── bootstrap/                   # Run locally ONCE to create the backend infrastructure
+├── bootstrap/                   # Deployed ONCE via env0 to create backend infrastructure
 │   ├── providers.tf             # AWS provider + Terraform version constraint
 │   ├── variables.tf             # Input variables (region, project_name, etc.)
 │   ├── main.tf                  # S3 bucket + DynamoDB table resources
-│   ├── outputs.tf               # Outputs including ready-to-use backend_hcl_snippet
-│   └── terraform.tfstate        # Local state for bootstrap resources (committed to git)
+│   └── outputs.tf               # Outputs including ready-to-use backend_hcl_snippet
 │
 ├── infra/                       # Deployed by env0 on every push to main
 │   ├── providers.tf             # AWS provider + Terraform version constraint
-│   ├── backend.tf               # S3 backend block with hardcoded values
-│   ├── backend.hcl              # Partial backend config (for local use)
+│   ├── backend.tf               # S3 backend block — updated after bootstrap deploys
+│   ├── backend.hcl              # Partial backend config reference (documentation only)
 │   ├── variables.tf             # Input variables (region, project_name, environment)
 │   ├── main.tf                  # Demo S3 bucket (the proof workload)
 │   └── outputs.tf               # Outputs including app_bucket_name
 │
-├── env0.yml                     # env0 custom workflow definition (version: 1)
 ├── iam-policy.json              # Minimum IAM policy for the Terraform IAM user
-├── .gitignore                   # Excludes .terraform/, *.tfvars, etc.
 └── README.md                    # This file
 ```
 
 ---
 
 ## Cost Breakdown
-
-All costs assume light usage consistent with a proof-of-concept workload.
 
 | Service | Resource | Expected Monthly Cost |
 |---|---|---|
@@ -123,7 +123,7 @@ All costs assume light usage consistent with a proof-of-concept workload.
 | DynamoDB | Storage (< 1 KB of lock items) | **$0.00** (Free Tier: 25 GB free) |
 | **Total** | | **< $0.01 / month** |
 
-> DynamoDB lock operations cost approximately $0.00000125 each. At 100 deploys/month that's $0.00025 — effectively zero.
+> DynamoDB lock operations cost approximately $0.00000125 each. At 100 deploys/month that is $0.00025 — effectively zero.
 
 ---
 
@@ -137,111 +137,98 @@ All costs assume light usage consistent with a proof-of-concept workload.
 | AWS CLI | 2.x | https://aws.amazon.com/cli/ |
 | Git | Any recent | https://git-scm.com |
 
-### AWS Account
+### Accounts
 
 - An AWS account with access to `eu-central-1`
-- An IAM user (e.g. `terraform-env0`) with the permissions in `iam-policy.json`
-- AWS credentials configured locally via `aws configure`
-
-### env0 Account
-
+- An IAM user (e.g. `terraform-env0`) with `AdministratorAccess` attached (can be tightened to `iam-policy.json` after everything works)
 - A free env0 account at https://app.env0.com
-- This Git repository connected to env0
-- AWS credentials configured in env0 (see [Step 3](#step-3--connect-to-env0))
+- This repository pushed to GitHub (or GitLab / Bitbucket)
 
 ---
 
-## Step 1 — Bootstrap the Remote Backend (Local, Run Once)
+## End-to-End Deployment via env0
 
-The bootstrap module creates the S3 bucket and DynamoDB table using **local state**. This only needs to be run once — ever.
-
-### 1.1 — Configure AWS credentials
-
-```bash
-aws configure
-# AWS Access Key ID: <your key>
-# AWS Secret Access Key: <your secret>
-# Default region name: eu-central-1
-# Default output format: json
-```
-
-Verify credentials are working before proceeding:
-
-```bash
-aws sts get-caller-identity
-```
-
-You must see your account ID returned. If you get `InvalidClientTokenId`, your credentials are wrong — check they were copied correctly and that the key is Active in the AWS console.
-
-> **Common gotcha:** If you previously ran `export AWS_ACCESS_KEY_ID=...` in the same terminal session, those environment variables override `~/.aws/credentials`. Run `unset AWS_ACCESS_KEY_ID && unset AWS_SECRET_ACCESS_KEY && unset AWS_SESSION_TOKEN` to clear them, then verify with `aws configure list` that the Type column shows `shared-credentials-file`.
-
-### 1.2 — Navigate to the bootstrap directory
-
-```bash
-cd bootstrap/
-```
-
-### 1.3 — Initialise Terraform (local backend — no remote config needed yet)
-
-```bash
-terraform init
-```
-
-### 1.4 — Apply
-
-```bash
-terraform apply
-```
-
-When prompted for `state_bucket_name`, press Enter to accept the default — the bucket name is automatically derived from your project name, account ID, and region:
-
-```
-tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1
-```
-
-Or supply it explicitly:
-
-```bash
-terraform apply -var="state_bucket_name=$(aws sts get-caller-identity --query Account --output text)"
-```
-
-> **Note:** `state_bucket_name` is a legacy variable from an earlier version of this project. The actual bucket name is derived from `project_name`, `aws_region`, and your account ID inside `locals {}` in `main.tf`. You will not be prompted for it if it has a default set.
-
-### 1.5 — Note the outputs
-
-After a successful apply, note the `backend_hcl_snippet` output — it contains the exact bucket name and table name you need in Step 2.
-
-```
-dynamodb_table_name = "tf-remote-backend-locks"
-state_bucket_name   = "tf-remote-backend-state-013141018419-eu-central-1"
-
-backend_hcl_snippet = <<EOT
-  bucket         = "tf-remote-backend-state-013141018419-eu-central-1"
-  key            = "infra/terraform.tfstate"
-  region         = "eu-central-1"
-  dynamodb_table = "tf-remote-backend-locks"
-  encrypt        = true
-EOT
-```
-
-### 1.6 — Commit the bootstrap state to git
-
-The bootstrap state file is committed to git so that the bootstrap resources are tracked. This is intentional and safe — it contains no secrets, only resource metadata.
-
-```bash
-git add -f terraform.tfstate
-git add variables.tf
-git commit -m "chore: bootstrap remote backend resources"
-git push
-```
+Everything from this point is done through the **env0 UI** and **AWS Console** — no local Terraform commands needed.
 
 ---
 
-## Step 2 — Configure the Infra Backend
+### Phase 1 — AWS Credentials
 
-The `infra/backend.tf` file contains the S3 backend block. It needs to point at the bucket and table created in Step 1.
+Before creating any templates, store your AWS credentials securely in env0 so both environments can use them.
 
-Open `infra/backend.tf` and confirm the values match your bootstrap outputs:
+1. In env0, click **Organisation Settings** (bottom-left) → **Credentials**
+2. Click **+ Add Credentials** → select **AWS Access Keys**
+3. Enter your IAM user's Access Key ID and Secret Access Key
+4. Name it `aws-eu-central-1`
+5. Click **Save**
+
+> Keep AWS credentials out of plain-text Terraform Variables. Always use the Credentials store so they are encrypted and never appear in deployment logs.
+
+---
+
+### Phase 2 — Create the Bootstrap Template
+
+The bootstrap template tells env0 how to deploy the `bootstrap/` folder.
+
+1. In env0, navigate to your **Project → Templates → New Template**
+2. Select **Terraform** as the template type
+3. Connect to **GitHub** and select this repository
+4. Set **Branch** to `main`
+5. Set **Terraform Folder** to `bootstrap`
+6. On the **Variables** screen, add:
+
+| Key | Value | Sensitive |
+|---|---|---|
+| `aws_region` | `eu-central-1` | Clear Text |
+| `project_name` | `tf-remote-backend` | Clear Text |
+
+7. Name the template `terraform-s3-remote-backend-bootstrap`
+8. Complete the wizard and save
+
+---
+
+### Phase 3 — Deploy Bootstrap via env0
+
+1. Open the bootstrap template → click **New Environment**
+2. Set **Environment Name** to `bootstrap`
+3. Set **Workspace Name** to `bootstrap`
+4. Scroll to **Environment Variables** and add:
+
+| Key | Value | Sensitive |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | your key ID | **Yes — Sensitive** |
+| `AWS_SECRET_ACCESS_KEY` | your secret | **Yes — Sensitive** |
+
+5. Turn off **Destroy in X hours** — set to Never
+6. Click **Run**
+
+env0 runs `terraform init` → `terraform plan`. Review the plan — you should see:
+
+```
++ aws_dynamodb_table.terraform_locks
++ aws_s3_bucket.terraform_state
++ aws_s3_bucket_lifecycle_configuration.terraform_state
++ aws_s3_bucket_public_access_block.terraform_state
++ aws_s3_bucket_server_side_encryption_configuration.terraform_state
++ aws_s3_bucket_versioning.terraform_state
+
+Plan: 6 to add, 0 to change, 0 to destroy.
+```
+
+Click **Approve**. After the apply completes, open the **Resources** tab and note:
+
+- `state_bucket_name` — e.g. `tf-remote-backend-state-013141018419-eu-central-1`
+- `dynamodb_table_name` — e.g. `tf-remote-backend-locks`
+
+You need both values in the next phase.
+
+---
+
+### Phase 4 — Configure the Infra Backend
+
+Now that the S3 bucket and DynamoDB table exist, update `infra/backend.tf` with the real values from the bootstrap outputs.
+
+Open `infra/backend.tf` in your editor and update the backend block:
 
 ```hcl
 terraform {
@@ -255,29 +242,26 @@ terraform {
 }
 ```
 
-Replace `013141018419` with your actual AWS account ID if different. Then commit and push:
+Replace `013141018419` with your actual AWS account ID from the bootstrap output. Commit and push to `main`:
 
 ```bash
 git add infra/backend.tf
-git commit -m "chore: configure infra S3 backend with real bucket values"
+git commit -m "chore: configure infra backend with bootstrap outputs"
 git push
 ```
 
-> **Why hardcode the values?** env0 runs `terraform init` without access to the local filesystem, so passing `-backend-config=backend.hcl` can be unreliable. Hardcoding in `backend.tf` is the most robust approach for CI/CD platforms.
+> **Why hardcode the values?** env0 runs `terraform init` in an isolated runner. Hardcoding directly in `backend.tf` is the most reliable approach for CI/CD platforms and avoids init argument complexity.
 
 ---
 
-## Step 3 — Connect to env0
+### Phase 5 — Create the Infra Template
 
-### 3.1 — Create a Template
-
-1. Log in to https://app.env0.com
-2. Navigate to **Templates → New Template**
-3. Select **GitHub** (or your VCS provider) and choose this repository
-4. Set **Template Type** to **Terraform**
+1. In env0, navigate to your **Project → Templates → New Template**
+2. Select **Terraform**
+3. Connect to the same GitHub repository
+4. Set **Branch** to `main`
 5. Set **Terraform Folder** to `infra`
-6. Set **Branch** to `main`
-7. Click through to **Variables** and add:
+6. On the **Variables** screen, add:
 
 | Key | Value | Sensitive |
 |---|---|---|
@@ -285,38 +269,21 @@ git push
 | `environment` | `dev` | Clear Text |
 | `project_name` | `tf-remote-backend-demo` | Clear Text |
 
-8. Complete the template creation wizard
-
-### 3.2 — Add AWS Credentials
-
-When creating the environment from the template (Step 4), you'll need to supply AWS credentials. The safest way is via environment variables set at the **Run Environment** screen:
-
-| Key | Value | Sensitive |
-|---|---|---|
-| `AWS_ACCESS_KEY_ID` | `AKIA...` | **Yes — Sensitive** |
-| `AWS_SECRET_ACCESS_KEY` | your secret | **Yes — Sensitive** |
-
-Always mark AWS credentials as **Sensitive** so they are encrypted and never appear in logs.
-
-Alternatively, configure credentials at **Organisation Settings → Credentials → Add Credentials → AWS Access Keys** and select them when creating the environment.
+7. Name the template `terraform-s3-remote-backend-infra`
+8. Complete the wizard and save
 
 ---
 
-## Step 4 — Deploy via env0
+### Phase 6 — Deploy Infra via env0
 
-### 4.1 — Create a New Environment from the Template
+1. Open the infra template → click **New Environment**
+2. Set **Environment Name** to `dev`
+3. Set **Workspace Name** to `dev`
+4. Add AWS credentials in **Environment Variables** (same as Phase 3 Step 4)
+5. Turn off **Destroy in X hours** — set to Never
+6. Click **Run**
 
-1. Open your template in env0
-2. Click **New Environment**
-3. Set Environment Name: `dev`
-4. Set Workspace Name: `dev`
-5. Disable **Destroy in X hours** (set to Never) to prevent auto-teardown
-6. Add AWS credentials in the Environment Variables section (see Step 3.2)
-7. Click **Run**
-
-### 4.2 — Approve the Plan
-
-env0 runs `terraform plan` first and shows you a diff. Review it — you should see:
+env0 initialises against the S3 backend, then plans. You should see:
 
 ```
 + aws_s3_bucket.app
@@ -327,55 +294,52 @@ env0 runs `terraform plan` first and shows you a diff. Review it — you should 
 Plan: 4 to add, 0 to change, 0 to destroy.
 ```
 
-Click **Approve** to apply.
-
-### 4.3 — Verify in AWS Console
-
-After a successful apply, you should have:
+Click **Approve**. After the apply completes you will have:
 
 | Resource | Name |
 |---|---|
 | S3 state bucket | `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1` |
+| DynamoDB lock table | `tf-remote-backend-locks` |
 | S3 demo bucket | `tf-remote-backend-demo-dev-<ACCOUNT_ID>` |
-| DynamoDB table | `tf-remote-backend-locks` |
 
 ---
 
 ## Verifying the Remote Backend
 
-After a successful env0 deploy, confirm the state file was written remotely:
+After the infra deploy, confirm the state file was written to S3.
 
 **In the AWS Console:**
 1. Go to S3 → `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1`
-2. You should see a folder `infra/`
-3. Inside it: `terraform.tfstate`
+2. You will see a folder prefixed with `env:/` — this is env0's workspace namespace
+3. Navigate into it → `infra/` → `terraform.tfstate`
 
 **Via CLI:**
 ```bash
-aws s3 ls s3://tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1/infra/ --region eu-central-1
+aws s3 ls s3://tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1/ --recursive --region eu-central-1
 ```
 
 Expected output:
 ```
-2026-04-23 21:24:31       2847 terraform.tfstate
+2026-04-24 10:22:27   6702   env:/<workspace>/infra/terraform.tfstate
 ```
 
-If the file is there — the full system is working end to end. ✅
+> env0 automatically namespaces state under `env:/<workspace-id>/` so multiple environments sharing the same bucket never collide with each other.
+
+If the file is there, the full system is working end to end. ✅
 
 ---
 
 ## Viewing the State Lock
 
-The DynamoDB lock only exists for a **few seconds during an active plan or apply**. It is written at the start and deleted on completion. To catch it:
+The DynamoDB lock only exists for a **few seconds during an active plan or apply**. To catch it live:
 
-**1. Open DynamoDB in a browser tab:**
-AWS Console → DynamoDB → Tables → `tf-remote-backend-locks` → **Explore table items**
+**1. Open two browser tabs:**
+- Tab 1: env0 infra environment → click **Redeploy**
+- Tab 2: AWS Console → DynamoDB → `tf-remote-backend-locks` → **Explore table items**
 
-**2. Trigger a redeploy in env0** (click Redeploy)
+**2. The moment env0 starts the plan — click Scan in DynamoDB**
 
-**3. Immediately switch to DynamoDB and click Scan/Run**
-
-You should briefly see a row like:
+You should briefly see:
 ```json
 {
   "LockID": "tf-remote-backend-state-.../infra/terraform.tfstate",
@@ -383,15 +347,15 @@ You should briefly see a row like:
 }
 ```
 
-**After the deploy completes**, the table will be empty — this is correct. An empty table means the lock was properly acquired and released.
+**After the deploy completes** the table will be empty — this is the correct healthy state. An empty table proves the lock was properly acquired and released.
 
-> If a lock row persists after a deploy fails, Terraform will refuse to run until it's cleared. See [Troubleshooting](#troubleshooting) for how to force-unlock.
+> If a lock row persists after a failed deploy, Terraform will refuse future runs until it is cleared. See [Troubleshooting](#troubleshooting) for how to force-unlock.
 
 ---
 
 ## IAM Permissions
 
-The `iam-policy.json` file contains the minimum IAM permissions required. Key permissions explained:
+The `iam-policy.json` file contains the minimum permissions required. Key actions explained:
 
 | Permission | Why needed |
 |---|---|
@@ -399,40 +363,40 @@ The `iam-policy.json` file contains the minimum IAM permissions required. Key pe
 | `s3:ListBucket` | Check if the state file exists |
 | `dynamodb:GetItem` / `PutItem` / `DeleteItem` | Acquire and release state locks |
 | `dynamodb:DescribeTable` | Verify the lock table is active |
-| `dynamodb:DescribeTimeToLive` | Required by the AWS provider when reading DynamoDB table state |
+| `dynamodb:DescribeTimeToLive` | Required by the AWS provider when reading DynamoDB state |
 | `s3:GetBucketPolicy` | Required by the AWS provider when reading S3 bucket state |
 | `sts:GetCallerIdentity` | Used by `data.aws_caller_identity.current` in Terraform |
 
-> **For initial setup:** The easiest approach is to attach `AdministratorAccess` to your IAM user while bootstrapping. Once everything is working, replace it with the minimal policy from `iam-policy.json`.
+> Start with `AdministratorAccess` to avoid permission issues during initial setup. Replace with the minimal `iam-policy.json` policy once everything is working.
 
 ---
 
 ## How State Locking Works
 
 ```
-terraform plan / apply
+env0 triggers terraform plan / apply
         │
         ▼
 1. ACQUIRE LOCK
-   DynamoDB PutItem → LockID: "bucket/infra/terraform.tfstate"
+   DynamoDB PutItem → LockID: "bucket/.../infra/terraform.tfstate"
         │
         ▼
 2. FETCH CURRENT STATE
-   S3 GetObject → infra/terraform.tfstate
+   S3 GetObject → env:/<workspace>/infra/terraform.tfstate
         │
         ▼
 3. CALCULATE DIFF / APPLY CHANGES
         │
         ▼
 4. WRITE NEW STATE
-   S3 PutObject → infra/terraform.tfstate (new version created)
+   S3 PutObject → new version of terraform.tfstate created
         │
         ▼
 5. RELEASE LOCK
-   DynamoDB DeleteItem → removes the lock row
+   DynamoDB DeleteItem → lock row removed
 ```
 
-If a second `terraform apply` runs concurrently, it reads the existing lock and fails with:
+If two deploys run simultaneously, the second one fails immediately with:
 
 ```
 Error: Error locking state: ConditionalCheckFailedException
@@ -442,13 +406,13 @@ Lock Info:
   Who:       env0-runner@worker-1
 ```
 
-This prevents two deploys from corrupting the state file simultaneously.
+This prevents concurrent deploys from corrupting the state file.
 
 ---
 
 ## Why Two S3 Buckets?
 
-After a successful deploy you'll have two buckets. Here's why they're separate:
+After a successful deploy you will have two buckets. Here is why they are separate:
 
 | Bucket | Purpose |
 |---|---|
@@ -457,47 +421,39 @@ After a successful deploy you'll have two buckets. Here's why they're separate:
 
 **Why not use the same bucket for both?**
 
-1. **Circular dependency** — Terraform needs the state bucket to exist before it runs. If Terraform also manages that bucket, you get a chicken-and-egg problem. Running `terraform destroy` would try to delete the bucket containing its own state mid-operation.
+1. **Circular dependency** — Terraform needs the state bucket to exist before it runs. If Terraform also manages that same bucket, `terraform destroy` would try to delete the bucket containing its own state file mid-operation.
 
 2. **Accidental deletion** — `terraform destroy` on the workload would wipe the state file too. Separate buckets with `prevent_destroy = true` on the state bucket prevent this.
 
-3. **Access control** — In real teams, the state bucket needs tighter permissions than application buckets. Mixing them makes IAM policies messy.
+3. **Access control** — The state bucket should only be accessible to Terraform runners. Application buckets often need broader access. Mixing them makes IAM policies messy.
 
-4. **Clarity** — At a glance, `*-state-*` = Terraform internals; everything else = real workloads.
+4. **Clarity** — At a glance: `*-state-*` = Terraform internals; everything else = real workloads.
 
-In production you'd reuse the **one state bucket** across many projects, each with a different `key` path:
+In production you would reuse the **one state bucket** across many projects, each with a different `key` path:
 ```
 s3://tf-remote-backend-state-.../
-  ├── infra/terraform.tfstate          ← this project
-  ├── another-project/terraform.tfstate
-  └── yet-another/terraform.tfstate
+  ├── env:/<id>/infra/terraform.tfstate              ← this project
+  ├── env:/<id>/another-project/terraform.tfstate
+  └── env:/<id>/yet-another/terraform.tfstate
 ```
 
 ---
 
 ## Destroying Resources
 
-### Destroy the infra workload (demo S3 bucket)
+### Destroy the infra workload
 
-In env0, click **Destroy** on the `dev` environment. Or locally:
-
-```bash
-cd infra/
-terraform init
-terraform destroy
-```
+In env0, open the **dev environment** → click **Destroy** → approve. This removes the demo S3 bucket cleanly via Terraform.
 
 ### Destroy the bootstrap resources
 
-> ⚠️ **Warning:** Destroying the state bucket deletes all Terraform state files. Ensure all workspaces using this backend have been destroyed first.
+> ⚠️ **Warning:** Destroying the state bucket deletes all Terraform state files. Destroy all other environments first.
 
-The `prevent_destroy` lifecycle block must be commented out before you can destroy:
-
-```bash
-cd bootstrap/
-# Edit main.tf — comment out the lifecycle { prevent_destroy = true } block
-terraform destroy
-```
+1. In env0, destroy the **dev** environment first
+2. In the AWS Console, empty the state bucket (you must delete all versions due to versioning being enabled)
+3. Delete the state bucket
+4. Delete the DynamoDB table
+5. In env0, delete the bootstrap environment
 
 ---
 
@@ -505,68 +461,36 @@ terraform destroy
 
 ### `InvalidClientTokenId` — credentials rejected by AWS
 
-Your AWS credentials are invalid or stale.
-
-```bash
-# Check what credentials are actually being used
-aws configure list
-
-# If Type shows "env" — environment variables are overriding your config file
-unset AWS_ACCESS_KEY_ID
-unset AWS_SECRET_ACCESS_KEY
-unset AWS_SESSION_TOKEN
-
-# Verify
-aws sts get-caller-identity
-```
-
-If the key was just created in the AWS console, wait 30–60 seconds for IAM propagation then retry.
+Your AWS credentials are wrong or stale. In env0, open the environment → **Variables** tab and re-enter the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` values marked as Sensitive. Confirm the key is **Active** in the AWS Console under IAM → Users → Security credentials.
 
 ---
 
 ### `BucketAlreadyOwnedByYou` during bootstrap
 
-The S3 bucket already exists in your account from a previous run. This means bootstrap already succeeded. You don't need to run it again — just proceed to deploying the infra workspace.
+The S3 bucket already exists from a previous run — bootstrap has already succeeded. Skip to Phase 4 and configure the infra backend with the existing bucket name.
 
 ---
 
-### `Error: required field is not set` for backend during `terraform init`
+### `Error: required field is not set` during terraform init
 
-The `infra/backend.tf` still has placeholder values. Open it and replace with your actual bucket name and account ID.
+The `infra/backend.tf` still contains placeholder values. Update the `bucket` and `dynamodb_table` fields with the real values from the bootstrap outputs and push the change.
 
 ---
 
 ### `Instance cannot be destroyed` — prevent_destroy error
 
-The `prevent_destroy = true` lifecycle block is blocking a plan that includes destroying the S3 bucket. This is the safety net working correctly. If you genuinely want to destroy, comment out the lifecycle block in `bootstrap/main.tf` first.
+The `prevent_destroy = true` lifecycle block is protecting the S3 bucket. This is intentional. To destroy it, comment out the lifecycle block in `bootstrap/main.tf` first.
 
 ---
 
 ### State lock not released after a failed deploy
 
-Find the lock ID from the error output and force-unlock:
+In env0, open the environment → **Settings** → look for **Force Unlock**. Or via CLI:
 
 ```bash
 cd infra/
 terraform force-unlock <LOCK_ID>
 ```
-
-Or delete directly from DynamoDB:
-
-```bash
-aws dynamodb delete-item \
-  --table-name tf-remote-backend-locks \
-  --key '{"LockID": {"S": "tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1/infra/terraform.tfstate"}}' \
-  --region eu-central-1
-```
-
----
-
-### env0 YAML validation error — `instance is not allowed to have the additional property "environments"`
-
-The `env0.yml` file must use `version: 1` at the top. The `environments:` key is **not** valid in env0's deploy spec schema — environments are configured in the env0 UI, not in this file.
-
-The `env0.yml` in this repo is intentionally minimal and only defines custom workflow steps.
 
 ---
 
@@ -577,11 +501,11 @@ The `env0.yml` in this repo is intentionally minimal and only defines custom wor
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `aws_region` | string | `eu-central-1` | AWS region for backend resources |
-| `project_name` | string | `tf-remote-backend` | Used as prefix for bucket and table names |
-| `state_key_prefix` | string | `""` | Optional prefix inside the S3 bucket for state files |
+| `project_name` | string | `tf-remote-backend` | Prefix for bucket and table names |
+| `state_key_prefix` | string | `""` | Optional prefix inside the S3 bucket |
 
-Bucket name is derived automatically as: `${project_name}-state-${account_id}-${region}`
-Table name is derived automatically as: `${project_name}-locks`
+Bucket name derived as: `${project_name}-state-${account_id}-${region}`
+Table name derived as: `${project_name}-locks`
 
 ### Infra (`infra/variables.tf`)
 
@@ -591,35 +515,4 @@ Table name is derived automatically as: `${project_name}-locks`
 | `project_name` | string | `tf-remote-backend-demo` | Used for naming the demo bucket |
 | `environment` | string | `dev` | One of: `dev`, `staging`, `prod` |
 
-Demo bucket name is derived as: `${project_name}-${environment}-${account_id}`
-
----
-
-## Quick Reference — Commands
-
-```bash
-# ── AWS auth check ────────────────────────────────────────────────────────────
-aws sts get-caller-identity
-
-# ── Bootstrap (run once locally) ─────────────────────────────────────────────
-cd bootstrap/
-terraform init
-terraform apply
-git add -f terraform.tfstate && git commit -m "chore: bootstrap" && git push
-
-# ── Local infra deploy (optional — env0 handles this normally) ────────────────
-cd infra/
-terraform init
-terraform plan
-terraform apply
-
-# ── Verify state was stored remotely ─────────────────────────────────────────
-aws s3 ls s3://tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1/infra/ --region eu-central-1
-
-# ── Check lock table (should be empty between deploys) ───────────────────────
-aws dynamodb scan --table-name tf-remote-backend-locks --region eu-central-1 --query "Count"
-
-# ── Force-unlock a stuck state lock ──────────────────────────────────────────
-cd infra/
-terraform force-unlock <LOCK_ID>
-```
+Demo bucket name derived as: `${project_name}-${environment}-${account_id}`
