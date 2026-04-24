@@ -8,7 +8,7 @@
 # Docs: https://docs.env0.com/docs/environments-as-code
 ###############################################################################
 
-version: 2
+version: 1
 
 environments:
 
