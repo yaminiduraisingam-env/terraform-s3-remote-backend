@@ -23,10 +23,6 @@ locals {
 
 resource "aws_s3_bucket" "app" {
   bucket = local.app_bucket_name
-
-  tags = {
-      Verified = "env0-state-test"
-  }
 }
 
 # Suspend versioning on the app bucket — we don't need object history here
