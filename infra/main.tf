@@ -24,7 +24,7 @@ locals {
 resource "aws_s3_bucket" "app" {
   bucket = local.app_bucket_name
 
-  tag = {
+  tags = {
       "name" = "test-tag-env0"
   }
 }
