@@ -1,3 +1,9 @@
+<h3 align="left">
+  <img width="600" height="128" alt="image" src="https://raw.githubusercontent.com/artemis-env0/Packages/refs/heads/main/Images/Logo%20Pack/01%20Main%20Logo/Digital/SVG/envzero_logomark_fullcolor_rgb.svg" />
+</h3>
+
+---
+
 # Terraform S3 Remote Backend + env0
 
 A fully working example of a **Terraform remote backend** using **Amazon S3** for state storage and **DynamoDB** for state locking, deployed to `eu-central-1` and driven by **env0**.
