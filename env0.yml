@@ -1,82 +1,34 @@
-###############################################################################
-# env0.yml — Environments as Code (EaC) v2
-#
-# Defines two env0 environments:
-#   1. bootstrap — runs ONCE to create the S3 bucket + DynamoDB table
-#   2. infra     — runs for every deployment; state stored in the bucket above
-#
-# Docs: https://docs.env0.com/docs/environments-as-code
-###############################################################################
-
 version: 1
 
 environments:
-
-  # ---------------------------------------------------------------------------
-  # BOOTSTRAP
-  # Run this environment first and only once (or on explicit changes).
-  # It has NO remote backend — its own state is managed locally by env0.
-  # ---------------------------------------------------------------------------
   bootstrap:
     name: "Remote Backend - Bootstrap"
-    projectName: "terraform-s3-remote-backend"     # Must match an existing env0 Project
+    projectName: "terraform-s3-remote-backend"
     workspace: "bootstrap"
     terraformVersion: "1.9.0"
-    autoApprove: false                              # Always require manual approval
-
+    autoApprove: false
     root:
       directory: bootstrap
-      terraformInit:
-        runOnPullRequest: true
-
-    # Supply AWS credentials via env0 Cloud Credentials (preferred) or as
-    # sensitive environment variables below.
     environmentVariables:
       - name: TF_VAR_aws_region
         value: "eu-central-1"
       - name: TF_VAR_project_name
         value: "tf-remote-backend"
 
-    # Uncomment and populate if you are using static IAM keys instead of
-    # env0 Cloud Credentials / OIDC:
-    #   - name: AWS_ACCESS_KEY_ID
-    #     sensitive: true
-    #   - name: AWS_SECRET_ACCESS_KEY
-    #     sensitive: true
-
-  # ---------------------------------------------------------------------------
-  # INFRA
-  # Uses the S3 backend + DynamoDB lock created by the bootstrap environment.
-  # The backend.hcl file in infra/ supplies the bucket/table names.
-  # ---------------------------------------------------------------------------
   infra:
     name: "Remote Backend - Infra"
     projectName: "terraform-s3-remote-backend"
     workspace: "infra"
     terraformVersion: "1.9.0"
     autoApprove: false
-
     root:
       directory: infra
-      # Pass the partial backend config file at init time.
-      terraformInit:
-        runOnPullRequest: true
-        additionalArguments: "-backend-config=backend.hcl"
-
     environmentVariables:
       - name: TF_VAR_aws_region
         value: "eu-central-1"
       - name: TF_VAR_project_name
-        value: "my-project"
+        value: "tf-remote-backend-demo"
       - name: TF_VAR_environment
         value: "dev"
-
-    # Alternatively, supply individual backend values as env vars so you
-    # don't need to edit backend.hcl manually:
-    #   - name: TF_CLI_ARGS_init
-    #     value: >-
-    #       -backend-config="bucket=tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1"
-    #       -backend-config="key=infra/terraform.tfstate"
-    #       -backend-config="region=eu-central-1"
-    #       -backend-config="dynamodb_table=tf-remote-backend-locks"
-    #       -backend-config="encrypt=true"
+      - name: TF_CLI_ARGS_init
+        value: "-backend-config=backend.hcl"
