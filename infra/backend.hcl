@@ -14,7 +14,7 @@
 # it already has all the correct values filled in.
 ###############################################################################
 
-bucket         = "<placeholder>"
+bucket         = "tf-remote-backend-state-013141018419-eu-central-1"
 key            = "infra/terraform.tfstate"
 region         = "eu-central-1"
 dynamodb_table = "<placeholder>"
