@@ -23,6 +23,10 @@ locals {
 
 resource "aws_s3_bucket" "app" {
   bucket = local.app_bucket_name
+
+  tag = {
+      "name" = "test-tag-env0"
+  }
 }
 
 # Suspend versioning on the app bucket — we don't need object history here
