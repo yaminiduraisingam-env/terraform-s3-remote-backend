@@ -1,34 +1,11 @@
 version: 1
 
-environments:
-  bootstrap:
-    name: "Remote Backend - Bootstrap"
-    projectName: "terraform-s3-remote-backend"
-    workspace: "bootstrap"
-    terraformVersion: "1.9.0"
-    autoApprove: false
-    root:
-      directory: bootstrap
-    environmentVariables:
-      - name: TF_VAR_aws_region
-        value: "eu-central-1"
-      - name: TF_VAR_project_name
-        value: "tf-remote-backend"
+deploy:
+  steps:
+    terraform_init:
+      command: "terraform init"
 
-  infra:
-    name: "Remote Backend - Infra"
-    projectName: "terraform-s3-remote-backend"
-    workspace: "infra"
-    terraformVersion: "1.9.0"
-    autoApprove: false
-    root:
-      directory: infra
-    environmentVariables:
-      - name: TF_VAR_aws_region
-        value: "eu-central-1"
-      - name: TF_VAR_project_name
-        value: "tf-remote-backend-demo"
-      - name: TF_VAR_environment
-        value: "dev"
-      - name: TF_CLI_ARGS_init
-        value: "-backend-config=backend.hcl"
+destroy:
+  steps:
+    terraform_init:
+      command: "terraform init"
