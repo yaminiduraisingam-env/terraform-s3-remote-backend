@@ -14,8 +14,8 @@
 # it already has all the correct values filled in.
 ###############################################################################
 
-bucket         = "tf-remote-backend-state-013141018419-eu-central-1"
+bucket         = "<placeholder>"
 key            = "infra/terraform.tfstate"
 region         = "eu-central-1"
-dynamodb_table = "tf-remote-backend-locks"
+dynamodb_table = "<placeholder>"
 encrypt        = true
