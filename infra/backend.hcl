@@ -17,5 +17,5 @@
 bucket         = "tf-remote-backend-state-013141018419-eu-central-1"
 key            = "infra/terraform.tfstate"
 region         = "eu-central-1"
-dynamodb_table = "<placeholder>"
+dynamodb_table = "tf-remote-backend-locks"
 encrypt        = true
