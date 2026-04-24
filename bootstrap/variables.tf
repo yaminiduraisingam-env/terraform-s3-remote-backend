@@ -25,3 +25,7 @@ variable "state_key_prefix" {
   type        = string
   default     = ""
 }
+
+variable "state_bucket_name" {
+  type = string
+}
