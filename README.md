@@ -19,21 +19,23 @@ A complete, production-ready project that provisions an **AWS S3 remote backend*
 5. [Repository Structure](#repository-structure)
 6. [Cost Breakdown](#cost-breakdown)
 7. [Prerequisites](#prerequisites)
-8. [End-to-End Deployment via env0](#end-to-end-deployment-via-env0)
-   - [Phase 1 — AWS Setup](#phase-1--aws-setup)
-   - [Phase 2 — Store AWS Credentials in env0](#phase-2--store-aws-credentials-in-env0)
-   - [Phase 3 — Create the Bootstrap Template](#phase-3--create-the-bootstrap-template)
-   - [Phase 4 — Deploy Bootstrap via env0](#phase-4--deploy-bootstrap-via-env0)
-   - [Phase 5 — Create the App-Bucket Template](#phase-5--create-the-app-bucket-template)
-   - [Phase 6 — Deploy App-Bucket via env0](#phase-6--deploy-app-bucket-via-env0)
+8. [End-to-End Deployment](#end-to-end-deployment)
+   - [Phase 1 — Create the Bootstrap State Bucket](#phase-1--create-the-bootstrap-state-bucket)
+   - [Phase 2 — AWS Credentials Check](#phase-2--aws-credentials-check)
+   - [Phase 3 — Store AWS Credentials in env0](#phase-3--store-aws-credentials-in-env0)
+   - [Phase 4 — Create the Bootstrap Template in env0](#phase-4--create-the-bootstrap-template-in-env0)
+   - [Phase 5 — Deploy Bootstrap via env0](#phase-5--deploy-bootstrap-via-env0)
+   - [Phase 6 — Create the App-Bucket Template in env0](#phase-6--create-the-app-bucket-template-in-env0)
+   - [Phase 7 — Deploy App-Bucket via env0](#phase-7--deploy-app-bucket-via-env0)
 9. [Verifying the Remote Backend](#verifying-the-remote-backend)
 10. [Viewing the State Lock Live](#viewing-the-state-lock-live)
 11. [How State Locking Works](#how-state-locking-works)
 12. [Why Two S3 Buckets?](#why-two-s3-buckets)
-13. [IAM Permissions](#iam-permissions)
-14. [Teardown](#teardown)
-15. [Troubleshooting](#troubleshooting)
-16. [Variable Reference](#variable-reference)
+13. [Where Is Bootstrap State Stored?](#where-is-bootstrap-state-stored)
+14. [IAM Permissions](#iam-permissions)
+15. [Teardown](#teardown)
+16. [Troubleshooting](#troubleshooting)
+17. [Variable Reference](#variable-reference)
 
 ---
 
@@ -47,10 +49,11 @@ This project provisions three AWS resources entirely through env0:
 | DynamoDB Table (lock) | `tf-remote-backend-locks` | Prevents concurrent deployments corrupting state |
 | S3 Bucket (workload) | `tf-remote-backend-demo-dev-<ACCOUNT_ID>` | Proof resource — shows a successful env0 deployment |
 
-It is split into two layers:
+There is also a fourth resource created manually in Phase 1:
 
-- **Bootstrap** — runs once to create the state bucket and lock table
-- **App-bucket** — runs on every deployment; creates the workload bucket with state stored in the bootstrap bucket
+| Resource | Name | Purpose |
+|---|---|---|
+| S3 Bucket (bootstrap state) | `tf-bootstrap-state-<ACCOUNT_ID>` | Stores the bootstrap environment's own state file |
 
 ---
 
@@ -95,9 +98,9 @@ remote_state {
 }
 ```
 
-Any environment that includes the root config with `include "root" { path = find_in_parent_folders() }` automatically gets a generated `backend.tf` with the correct values. The `key` is set dynamically using the environment's path relative to the root — so each environment gets a unique state file location without any manual configuration.
+Any environment that includes the root config with `include "root" { path = find_in_parent_folders() }` automatically gets a generated `backend.tf` with the correct values. The `key` is set dynamically using the environment's folder path — so each environment gets a unique state file location without any manual configuration.
 
-The bootstrap environment is the **one exception** — it intentionally does not inherit the root config because it is responsible for creating the bucket. env0 manages its state internally.
+The bootstrap environment is the **one exception** — it uses its own dedicated S3 bucket created in Phase 1, because the main state bucket doesn't exist yet when bootstrap runs.
 
 ---
 
@@ -111,8 +114,8 @@ The bootstrap environment is the **one exception** — it intentionally does not
 │  │  Bootstrap Environment  │    │    App-Bucket Environment       │  │
 │  │                         │    │                                 │  │
 │  │  Runs ONCE              │    │  Runs on every push to main     │  │
-│  │  State: env0 managed    │    │  State: S3 remote backend       │  │
-│  │  No remote backend      │    │  Lock: DynamoDB                 │  │
+│  │  State: dedicated S3    │    │  State: S3 remote backend       │  │
+│  │  bucket (Phase 1)       │    │  Lock: DynamoDB                 │  │
 │  └────────────┬────────────┘    └──────────────┬──────────────────┘  │
 └───────────────┼─────────────────────────────────┼────────────────────┘
                 │ tofu apply (via terragrunt)      │ tofu init + apply
@@ -121,7 +124,14 @@ The bootstrap environment is the **one exception** — it intentionally does not
 │                        AWS  eu-central-1                             │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  S3 State Bucket                                               │  │
+│  │  Bootstrap State Bucket  ◄── created manually in Phase 1       │  │
+│  │  tf-bootstrap-state-<ACCOUNT_ID>                               │  │
+│  │                                                                │  │
+│  │  bootstrap/terraform.tfstate  ◄── written by bootstrap deploy  │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  S3 State Bucket  ◄── created by bootstrap                     │  │
 │  │  tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1             │  │
 │  │                                                                │  │
 │  │  Versioned + AES-256 Encrypted + Fully Private                 │  │
@@ -129,7 +139,7 @@ The bootstrap environment is the **one exception** — it intentionally does not
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  DynamoDB Lock Table                                           │  │
+│  │  DynamoDB Lock Table  ◄── created by bootstrap                 │  │
 │  │  tf-remote-backend-locks                                       │  │
 │  │                                                                │  │
 │  │  PAY_PER_REQUEST — effectively free at this usage level        │  │
@@ -138,10 +148,8 @@ The bootstrap environment is the **one exception** — it intentionally does not
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  Demo Workload Bucket                                          │  │
+│  │  Demo Workload Bucket  ◄── created by app-bucket deployment    │  │
 │  │  tf-remote-backend-demo-dev-<ACCOUNT_ID>                       │  │
-│  │                                                                │  │
-│  │  Created by env0 app-bucket deployment                         │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -168,10 +176,10 @@ opentofu-s3-remote-backend/
 │
 ├── live/                        # Environment-specific Terragrunt configs
 │   ├── bootstrap/
-│   │   └── terragrunt.hcl       # Calls modules/bootstrap — NO root include
+│   │   └── terragrunt.hcl       # Uses dedicated bootstrap state bucket from Phase 1
 │   └── dev/
 │       └── app-bucket/
-│           └── terragrunt.hcl   # Calls modules/app-bucket — inherits root
+│           └── terragrunt.hcl   # Inherits root config — backend auto-generated
 │
 ├── .gitignore
 └── README.md
@@ -185,7 +193,8 @@ opentofu-s3-remote-backend/
 
 | Service | Resource | Expected Monthly Cost |
 |---|---|---|
-| S3 | State bucket (< 1 MB of state files) | **$0.00** (Free Tier: 5 GB) |
+| S3 | Bootstrap state bucket (< 1 MB) | **$0.00** (Free Tier: 5 GB) |
+| S3 | Main state bucket (< 1 MB) | **$0.00** |
 | S3 | Demo workload bucket (empty) | **$0.00** |
 | S3 | PUT/GET requests (< 100/month) | **$0.00** (Free Tier: 2,000 PUT) |
 | DynamoDB | Lock table — PAY_PER_REQUEST | **< $0.01** (~2 ops per deploy) |
@@ -203,7 +212,7 @@ opentofu-s3-remote-backend/
 | AWS CLI | 2.x | https://aws.amazon.com/cli/ |
 | Git | Any | https://git-scm.com |
 
-> OpenTofu and Terragrunt are installed and managed by env0 automatically — no local installation needed.
+> OpenTofu and Terragrunt are installed and managed by env0 automatically — no local installation needed for deployments.
 
 ### Accounts
 
@@ -214,25 +223,72 @@ opentofu-s3-remote-backend/
 
 ---
 
-## End-to-End Deployment via env0
-
-Everything below is done through the **env0 UI** and **AWS Console**. No local OpenTofu or Terragrunt commands are needed.
+## End-to-End Deployment
 
 ---
 
-### Phase 1 — AWS Setup
+### Phase 1 — Create the Bootstrap State Bucket
 
-Confirm your AWS credentials are working:
+This is the **only manual step** in the entire project. This bucket stores the bootstrap environment's own state file so it lives in your AWS account rather than on env0's servers. It is created once and never touched again.
+
+Run these commands one at a time:
+
+```bash
+# Create the bucket
+aws s3api create-bucket \
+  --bucket tf-bootstrap-state-<YOUR_ACCOUNT_ID> \
+  --region eu-central-1 \
+  --create-bucket-configuration LocationConstraint=eu-central-1
+```
+
+```bash
+# Enable versioning
+aws s3api put-bucket-versioning \
+  --bucket tf-bootstrap-state-<YOUR_ACCOUNT_ID> \
+  --versioning-configuration Status=Enabled
+```
+
+```bash
+# Enable encryption
+aws s3api put-bucket-encryption \
+  --bucket tf-bootstrap-state-<YOUR_ACCOUNT_ID> \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+```
+
+```bash
+# Block all public access
+aws s3api put-public-access-block \
+  --bucket tf-bootstrap-state-<YOUR_ACCOUNT_ID> \
+  --public-access-block-configuration \
+  "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+```
+
+Replace `<YOUR_ACCOUNT_ID>` with your AWS account ID. To find it:
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+> This bucket is intentionally not managed by OpenTofu. It is permanent infrastructure — like a VPC — that exists outside of any state file. It never needs to be destroyed.
+
+---
+
+### Phase 2 — AWS Credentials Check
+
+Confirm your AWS credentials are working before proceeding:
 
 ```bash
 aws sts get-caller-identity
 ```
 
-You should see your Account ID, User ARN, and User ID. Note your **Account ID** — you will need it in Phase 3.
+You should see your Account ID, User ARN, and User ID returned. If you get `InvalidClientTokenId` see [Troubleshooting](#troubleshooting).
 
 ---
 
-### Phase 2 — Store AWS Credentials in env0
+### Phase 3 — Store AWS Credentials in env0
+
+Store your credentials once and both environments will use them.
 
 1. In env0, click **Organisation Settings** (bottom-left) → **Credentials**
 2. Click **+ Add Credentials** → select **AWS Access Keys**
@@ -240,16 +296,16 @@ You should see your Account ID, User ARN, and User ID. Note your **Account ID** 
 4. Name it `aws-eu-central-1`
 5. Click **Save**
 
-> Never put AWS credentials in plain-text variables. The Credentials store encrypts them so they never appear in logs.
+> Never put AWS credentials in plain-text variables. The Credentials store encrypts them so they never appear in deployment logs.
 
 ---
 
-### Phase 3 — Create the Bootstrap Template
+### Phase 4 — Create the Bootstrap Template in env0
 
 1. In env0, navigate to **Project → Templates → New Template**
 2. Set **IaC Type** to **Terragrunt**
 3. Set **OpenTofu Version** to `1.11.6`
-4. Set **Terragrunt Version** to `1.0.5`
+4. Set **Terragrunt Version** to `1.0.6`
 5. Connect to **GitHub** and select this repository
 6. Set **Branch** to `main`
 7. Set **Terraform Folder** to `live/bootstrap`
@@ -265,7 +321,7 @@ You should see your Account ID, User ARN, and User ID. Note your **Account ID** 
 
 ---
 
-### Phase 4 — Deploy Bootstrap via env0
+### Phase 5 — Deploy Bootstrap via env0
 
 1. Open the bootstrap template → click **New Environment**
 2. Set **Environment Name** to `bootstrap`
@@ -302,12 +358,12 @@ After the apply completes, click the **Resources** tab and note:
 
 ---
 
-### Phase 5 — Create the App-Bucket Template
+### Phase 6 — Create the App-Bucket Template in env0
 
 1. In env0, navigate to **Project → Templates → New Template**
 2. Set **IaC Type** to **Terragrunt**
 3. Set **OpenTofu Version** to `1.11.6`
-4. Set **Terragrunt Version** to `1.0.5`
+4. Set **Terragrunt Version** to `1.0.6`
 5. Connect to the same GitHub repository
 6. Set **Branch** to `main`
 7. Set **Terraform Folder** to `live/dev/app-bucket`
@@ -324,14 +380,15 @@ After the apply completes, click the **Resources** tab and note:
 
 ---
 
-### Phase 6 — Deploy App-Bucket via env0
+### Phase 7 — Deploy App-Bucket via env0
 
 1. Open the app-bucket template → click **New Environment**
 2. Set **Environment Name** to `dev`
 3. Set **Workspace Name** to `dev`
-4. Add the same AWS credentials as Phase 4
+4. Add the same AWS credentials as Phase 5
 5. Set **Destroy in X hours** to **Never**
-6. Click **Run**
+6. Set **Dependencies** → add `bootstrap` environment
+7. Click **Run**
 
 Terragrunt reads the root `terragrunt.hcl`, generates `backend.tf` automatically pointing at the state bucket, then runs `tofu init` and `tofu plan`. You should see:
 
@@ -346,11 +403,12 @@ Plan: 4 to add, 0 to change, 0 to destroy.
 
 Click **Approve**.
 
-After the apply completes you will have all three AWS resources:
+After the apply completes you will have all resources in AWS:
 
 | Resource | Name |
 |---|---|
-| S3 state bucket | `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1` |
+| S3 bootstrap state bucket | `tf-bootstrap-state-<ACCOUNT_ID>` |
+| S3 main state bucket | `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1` |
 | DynamoDB lock table | `tf-remote-backend-locks` |
 | S3 demo workload bucket | `tf-remote-backend-demo-dev-<ACCOUNT_ID>` |
 
@@ -380,6 +438,16 @@ Expected output:
 Open the **dev environment** → **Resources** tab to see every managed resource rendered visually from the state file.
 
 > env0 automatically namespaces state under `env:/<workspace-id>/` so multiple environments sharing the same bucket never collide.
+
+**Verify bootstrap state is also in AWS:**
+```bash
+aws s3 ls s3://tf-bootstrap-state-<ACCOUNT_ID>/bootstrap/ --region eu-central-1
+```
+
+Expected output:
+```
+2026-05-25 10:20:14   4821   terraform.tfstate
+```
 
 ---
 
@@ -441,21 +509,33 @@ If two deploys run simultaneously the second one fails immediately — protectin
 
 ## Why Two S3 Buckets?
 
+After a successful deploy you will have two state-related buckets plus one workload bucket. Here is why the state buckets are separate:
+
 | Bucket | Purpose |
 |---|---|
-| `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1` | **The filing cabinet** — stores OpenTofu state. Infrastructure for OpenTofu itself. |
-| `tf-remote-backend-demo-dev-<ACCOUNT_ID>` | **The workload** — the actual deployed resource. In a real project this holds application data. |
+| `tf-bootstrap-state-<ACCOUNT_ID>` | Stores bootstrap's own state — lives entirely in your AWS account |
+| `tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1` | Stores all workload state — managed by OpenTofu |
+| `tf-remote-backend-demo-dev-<ACCOUNT_ID>` | The workload itself — the resource env0 deployed |
 
-They must be separate because OpenTofu needs the state bucket to exist **before** it runs. If OpenTofu also managed that bucket as a resource, `tofu destroy` would attempt to delete the bucket containing its own state file mid-operation.
+The main state bucket and the workload bucket must be separate because OpenTofu needs the state bucket to exist **before** it runs. If OpenTofu also managed that bucket as a resource, `tofu destroy` would attempt to delete the bucket containing its own state file mid-operation.
 
-In production the one state bucket is reused across every project, each with a different `key` path:
+---
+
+## Where Is Bootstrap State Stored?
+
+This is a common question — bootstrap creates the state bucket, so where does bootstrap's own state live?
+
+The answer is the dedicated bucket created in Phase 1. Here is the full picture:
 
 ```
-s3://tf-remote-backend-state-.../
-  ├── env:/<id>/live/dev/app-bucket/terraform.tfstate
-  ├── env:/<id>/live/dev/another-service/terraform.tfstate
-  └── env:/<id>/live/prod/app-bucket/terraform.tfstate
+tf-bootstrap-state-<ACCOUNT_ID>          ← manually created, permanent
+  └── bootstrap/terraform.tfstate        ← bootstrap state (your AWS account)
+
+tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1   ← created by bootstrap
+  └── env:/<id>/live/dev/app-bucket/terraform.tfstate ← app-bucket state
 ```
+
+Both state files live entirely in your AWS account. Nothing lives on env0's servers or any third-party infrastructure. For a financial services customer this answers the data residency question definitively.
 
 ---
 
@@ -465,21 +545,21 @@ The `iam-policy.json` file contains the minimum permissions required:
 
 | Permission | Why needed |
 |---|---|
-| `s3:GetObject` / `s3:PutObject` | Read and write the state file |
-| `s3:ListBucket` | Check if the state file exists |
+| `s3:GetObject` / `s3:PutObject` | Read and write state files |
+| `s3:ListBucket` | Check if a state file exists |
 | `s3:GetBucketPolicy` | Required by the AWS provider when reading bucket state |
 | `dynamodb:GetItem` / `PutItem` / `DeleteItem` | Acquire and release state locks |
 | `dynamodb:DescribeTable` | Verify the lock table is active |
 | `dynamodb:DescribeTimeToLive` | Required by the AWS provider |
 | `sts:GetCallerIdentity` | Used by `data.aws_caller_identity.current` |
 
-> Start with `AdministratorAccess` for initial setup. Replace with the minimal policy once everything is working.
+> Start with `AdministratorAccess` for initial setup. Replace with the minimal policy from `iam-policy.json` once everything is working.
 
 ---
 
 ## Teardown
 
-**Always destroy in this order — app-bucket first, bootstrap second.**
+**Always destroy in this order.**
 
 ### Step 1 — Destroy the app-bucket workload
 
@@ -489,16 +569,31 @@ In env0 → open the **dev environment** → click **Destroy** → Approve.
 
 In env0 → open the **bootstrap environment** → click **Destroy** → Approve.
 
-The state bucket has `force_destroy = true` set — env0 will empty all versioned objects automatically before deletion. No manual steps needed.
+The state bucket has `force_destroy = true` — env0 empties all versioned objects automatically before deletion.
 
-### Step 3 — Verify AWS is clean
+### Step 3 — Delete the bootstrap state bucket
+
+This bucket was created manually so it must be deleted manually:
+
+```bash
+# Empty the bucket first
+aws s3 rm s3://tf-bootstrap-state-<YOUR_ACCOUNT_ID> --recursive --region eu-central-1
+
+# Delete the bucket
+aws s3api delete-bucket \
+  --bucket tf-bootstrap-state-<YOUR_ACCOUNT_ID> \
+  --region eu-central-1
+```
+
+### Step 4 — Verify AWS is clean
 
 ```bash
 aws s3 ls | grep tf-remote-backend
+aws s3 ls | grep tf-bootstrap
 aws dynamodb list-tables --region eu-central-1
 ```
 
-Both should return nothing.
+All should return nothing.
 
 ---
 
@@ -517,15 +612,24 @@ Confirm the key is Active in AWS Console → IAM → Users → Security credenti
 
 ---
 
-### Bootstrap plan shows 0 resources
+### `BucketAlreadyOwnedByYou` during bootstrap deploy
 
-Terragrunt may be pointing at an empty directory. Confirm the env0 template's **Terraform Folder** is set to `live/bootstrap` — not `bootstrap/` or `modules/bootstrap`.
+The main state bucket already exists from a previous run. Bootstrap has already succeeded — skip to Phase 6.
+
+---
+
+### `BucketNotEmpty` when destroying bootstrap
+
+The state bucket has versioned objects. Use the AWS Console:
+1. Go to S3 → click the bucket
+2. Click **Empty** → type `permanently delete` → confirm
+3. Click **Delete** → type the bucket name → confirm
 
 ---
 
 ### App-bucket init fails with `bucket does not exist`
 
-Bootstrap has not been deployed yet, or was deployed to a different account. Deploy bootstrap first and confirm the state bucket exists in AWS Console → S3.
+Bootstrap has not been deployed yet, or the Phase 1 bucket was not created. Confirm the main state bucket exists in AWS Console → S3 before deploying app-bucket.
 
 ---
 
@@ -541,7 +645,7 @@ tofu force-unlock <LOCK_ID>
 
 ### Accidentally deleted bootstrap before app-bucket
 
-The app-bucket environment cannot init because its S3 backend no longer exists. Delete the workload bucket manually if it still exists, then click **Delete Environment** in env0 on the app-bucket environment.
+The app-bucket environment cannot init because its S3 backend no longer exists. Check if the workload bucket still exists and delete it manually, then click **Delete Environment** in env0:
 
 ```bash
 aws s3 rb s3://tf-remote-backend-demo-dev-<ACCOUNT_ID> --force --region eu-central-1
@@ -559,8 +663,8 @@ aws s3 rb s3://tf-remote-backend-demo-dev-<ACCOUNT_ID> --force --region eu-centr
 | `project_name` | string | `tf-remote-backend` | Prefix for bucket and table names |
 
 Resources created:
-- Bucket: `${project_name}-state-${account_id}-${region}`
-- Table: `${project_name}-locks`
+- Main state bucket: `${project_name}-state-${account_id}-${region}`
+- Lock table: `${project_name}-locks`
 
 ### App-bucket module (`modules/app-bucket/variables.tf`)
 
