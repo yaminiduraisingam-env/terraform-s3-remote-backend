@@ -58,7 +58,7 @@ It is split into two layers:
 
 ### OpenTofu over Terraform
 
-In August 2023, HashiCorp changed Terraform's licence from open source (MPL 2.0) to the Business Source Licence (BSL), introducing commercial restrictions. OpenTofu is the Linux Foundation-backed open source fork that guarantees the tooling remains free and unrestricted permanently.
+In August 2023, HashiCorp changed Terraform's licence from open source (MPL 2.0) to the Business Source Licence (BSL), introducing commercial restrictions. OpenTofu is the Linux Foundation-backed open source fork that guarantees the tooling remains free and unrestricted permanently. The current stable release is **v1.11.6** (April 2026).
 
 | | Terraform | OpenTofu |
 |---|---|---|
@@ -75,13 +75,15 @@ Without Terragrunt, every environment requires a manually maintained `backend.tf
 
 Terragrunt defines the backend **once** in the root `terragrunt.hcl` and generates `backend.tf` automatically for every environment at runtime. Adding a new environment is a single `terragrunt.hcl` file — no copy-paste, no manual backend configuration.
 
+This project uses **Terragrunt 1.0** — the first stable release (March 2026) with a formal backwards compatibility commitment. For a financial services team that needs confidence their tooling won't break between upgrades, the 1.0 stability guarantee matters.
+
 ---
 
 ## How Terragrunt Works Here
 
 The root `terragrunt.hcl` defines the S3 backend configuration once:
 
-```
+```hcl
 remote_state {
   backend = "s3"
   config = {
@@ -246,8 +248,8 @@ You should see your Account ID, User ARN, and User ID. Note your **Account ID** 
 
 1. In env0, navigate to **Project → Templates → New Template**
 2. Set **IaC Type** to **Terragrunt**
-3. Set **OpenTofu Version** to `1.8.0`
-4. Set **Terragrunt Version** to `0.67.0`
+3. Set **OpenTofu Version** to `1.11.6`
+4. Set **Terragrunt Version** to `1.0.5`
 5. Connect to **GitHub** and select this repository
 6. Set **Branch** to `main`
 7. Set **Terraform Folder** to `live/bootstrap`
@@ -294,6 +296,7 @@ Plan: 6 to add, 0 to change, 0 to destroy.
 Click **Approve**.
 
 After the apply completes, click the **Resources** tab and note:
+
 - `state_bucket_name` → e.g. `tf-remote-backend-state-013141018419-eu-central-1`
 - `dynamodb_table_name` → e.g. `tf-remote-backend-locks`
 
@@ -303,8 +306,8 @@ After the apply completes, click the **Resources** tab and note:
 
 1. In env0, navigate to **Project → Templates → New Template**
 2. Set **IaC Type** to **Terragrunt**
-3. Set **OpenTofu Version** to `1.8.0`
-4. Set **Terragrunt Version** to `0.67.0`
+3. Set **OpenTofu Version** to `1.11.6`
+4. Set **Terragrunt Version** to `1.0.5`
 5. Connect to the same GitHub repository
 6. Set **Branch** to `main`
 7. Set **Terraform Folder** to `live/dev/app-bucket`
@@ -370,11 +373,13 @@ aws s3 ls s3://tf-remote-backend-state-<ACCOUNT_ID>-eu-central-1/ \
 
 Expected output:
 ```
-2026-04-24 10:22:27   6702   env:/<workspace-id>/live/dev/app-bucket/terraform.tfstate
+2026-05-25 10:22:27   6702   env:/<workspace-id>/live/dev/app-bucket/terraform.tfstate
 ```
 
 **In env0:**
 Open the **dev environment** → **Resources** tab to see every managed resource rendered visually from the state file.
+
+> env0 automatically namespaces state under `env:/<workspace-id>/` so multiple environments sharing the same bucket never collide.
 
 ---
 
@@ -443,6 +448,15 @@ If two deploys run simultaneously the second one fails immediately — protectin
 
 They must be separate because OpenTofu needs the state bucket to exist **before** it runs. If OpenTofu also managed that bucket as a resource, `tofu destroy` would attempt to delete the bucket containing its own state file mid-operation.
 
+In production the one state bucket is reused across every project, each with a different `key` path:
+
+```
+s3://tf-remote-backend-state-.../
+  ├── env:/<id>/live/dev/app-bucket/terraform.tfstate
+  ├── env:/<id>/live/dev/another-service/terraform.tfstate
+  └── env:/<id>/live/prod/app-bucket/terraform.tfstate
+```
+
 ---
 
 ## IAM Permissions
@@ -505,7 +519,7 @@ Confirm the key is Active in AWS Console → IAM → Users → Security credenti
 
 ### Bootstrap plan shows 0 resources
 
-Terragrunt may be pointing at an empty directory. Confirm the env0 template's **Terraform Folder** is set to `live/bootstrap` (not `bootstrap/` or `modules/bootstrap`).
+Terragrunt may be pointing at an empty directory. Confirm the env0 template's **Terraform Folder** is set to `live/bootstrap` — not `bootstrap/` or `modules/bootstrap`.
 
 ---
 
